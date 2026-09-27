@@ -1,11 +1,11 @@
 --========================================================
 -- LUCKY HUB
--- AUTO STEAL + AUTO RETURN
+-- AUTO STEAL
+-- AUTO RETURN
 -- GOD MODE
 -- NOCLIP
--- SPEED SLIDER
+-- SPEED
 -- MOBILE + PC
--- FPS BOOST REMOVED
 --========================================================
 
 local Players = game:GetService("Players")
@@ -38,7 +38,7 @@ local EGG_PICKUP_DISTANCE = 2.5
 local SAFEZONE_DISTANCE = 8
 
 local MOVE_TIMEOUT = 25
-local PICKUP_VERIFY_TIMEOUT = 2
+local PICKUP_DELAY = 0.15
 
 --========================================================
 -- SETTINGS
@@ -50,27 +50,14 @@ local GOD_MODE = false
 local NOCLIP = false
 
 --========================================================
--- STATE
---========================================================
-
-local Character
-local Humanoid
-local HRP
-
-local moving = false
-local missionRunning = false
-
-local currentEgg = nil
-
-local oldAutoRotate = true
-
-local connectedPrompts = {}
-
-local godConnections = {}
-
---========================================================
 -- CHARACTER
 --========================================================
+
+local Character = nil
+local Humanoid = nil
+local HRP = nil
+
+local oldAutoRotate = true
 
 local function setupCharacter(character)
 
@@ -89,34 +76,61 @@ local function setupCharacter(character)
 		)
 
 	if Humanoid then
+
 		oldAutoRotate =
 			Humanoid.AutoRotate
+
+		-- Membantu mencegah death karena
+		-- lepasnya bagian character.
+		pcall(function()
+
+			Humanoid.BreakJointsOnDeath =
+				false
+
+			Humanoid.RequiresNeck =
+				false
+		end)
 	end
 end
 
 if Player.Character then
-	setupCharacter(Player.Character)
+	setupCharacter(
+		Player.Character
+	)
 end
 
-Player.CharacterAdded:Connect(
-	function(character)
-
-		task.wait(0.5)
-
-		setupCharacter(character)
-
-		if GOD_MODE then
-			task.wait(0.2)
-			enableGodMode()
-		end
-	end
-)
-
 --========================================================
--- GOD MODE
+-- STATES
 --========================================================
 
-local function disconnectGod()
+local moving = false
+local missionRunning = false
+
+local currentEgg = nil
+
+local connectedPrompts = {}
+
+--========================================================
+-- GOD MODE VARIABLES
+--========================================================
+
+local godConnections = {}
+
+local godLastHealth = nil
+local godDamageTaken = false
+
+--========================================================
+-- NOCLIP VARIABLES
+--========================================================
+
+local savedCollision =
+	{}
+
+--========================================================
+-- GOD MODE DISCONNECT
+--========================================================
+
+local function disconnectGodConnections()
 
 	for _, connection in ipairs(
 		godConnections
@@ -127,55 +141,99 @@ local function disconnectGod()
 		end)
 	end
 
-	table.clear(godConnections)
+	table.clear(
+		godConnections
+	)
 end
 
-function enableGodMode()
+--========================================================
+-- GOD MODE
+--========================================================
 
-	disconnectGod()
+local function enableGodMode()
+
+	disconnectGodConnections()
 
 	if not Character
+		or not Character.Parent
 		or not Humanoid
 		or not Humanoid.Parent then
+
 		return
 	end
 
-	GOD_MODE = true
+	GOD_MODE =
+		true
 
-	local humanoid = Humanoid
+	godDamageTaken =
+		false
 
-	-- Jangan mengubah WalkSpeed.
-	-- Player tetap bisa lari.
+	godLastHealth =
+		Humanoid.Health
+
+	--====================================================
+	-- INITIAL PROTECTION
+	--====================================================
 
 	pcall(function()
-		humanoid:SetStateEnabled(
+
+		Humanoid.BreakJointsOnDeath =
+			false
+
+		Humanoid.RequiresNeck =
+			false
+
+		Humanoid:SetStateEnabled(
 			Enum.HumanoidStateType.Dead,
 			false
 		)
 	end)
 
-	-- Pertahankan HP.
-	if humanoid.Health <= 0 then
-		humanoid.Health =
-			humanoid.MaxHealth
+	if Humanoid.Health <= 0 then
+
+		Humanoid.Health =
+			Humanoid.MaxHealth
 	end
 
+	--====================================================
+	-- HEALTH MONITOR
+	--====================================================
+
 	local healthConnection =
-		humanoid.HealthChanged:Connect(
-			function(health)
+		Humanoid.HealthChanged:Connect(
+			function(newHealth)
 
 				if not GOD_MODE then
 					return
 				end
 
-				if not humanoid.Parent then
+				if not Humanoid
+					or not Humanoid.Parent then
+
 					return
 				end
 
-				if health <= 0 then
+				local previousHealth =
+					godLastHealth
+					or Humanoid.MaxHealth
 
-					humanoid.Health =
-						humanoid.MaxHealth
+				if newHealth < previousHealth then
+
+					godDamageTaken =
+						true
+				end
+
+				godLastHealth =
+					newHealth
+
+				-- Jangan biarkan HP sampai 0.
+				if newHealth <= 0 then
+
+					Humanoid.Health =
+						Humanoid.MaxHealth
+
+					godLastHealth =
+						Humanoid.MaxHealth
 				end
 			end
 		)
@@ -185,8 +243,12 @@ function enableGodMode()
 		healthConnection
 	)
 
+	--====================================================
+	-- DEATH STATE MONITOR
+	--====================================================
+
 	local stateConnection =
-		humanoid.StateChanged:Connect(
+		Humanoid.StateChanged:Connect(
 			function(_, newState)
 
 				if not GOD_MODE then
@@ -198,13 +260,16 @@ function enableGodMode()
 
 					pcall(function()
 
-						humanoid:SetStateEnabled(
+						Humanoid:SetStateEnabled(
 							Enum.HumanoidStateType.Dead,
 							false
 						)
 
-						humanoid.Health =
-							humanoid.MaxHealth
+						Humanoid.Health =
+							Humanoid.MaxHealth
+
+						godLastHealth =
+							Humanoid.MaxHealth
 					end)
 				end
 			end
@@ -214,13 +279,68 @@ function enableGodMode()
 		godConnections,
 		stateConnection
 	)
+
+	--====================================================
+	-- CONTINUOUS PROTECTION
+	--====================================================
+
+	local heartbeatConnection =
+		RunService.Heartbeat:Connect(
+			function()
+
+				if not GOD_MODE then
+					return
+				end
+
+				if not Character
+					or not Character.Parent
+					or not Humanoid
+					or not Humanoid.Parent then
+
+					return
+				end
+
+				pcall(function()
+
+					Humanoid:SetStateEnabled(
+						Enum.HumanoidStateType.Dead,
+						false
+					)
+
+					Humanoid.BreakJointsOnDeath =
+						false
+
+					Humanoid.RequiresNeck =
+						false
+				end)
+
+				if Humanoid.Health <= 0 then
+
+					Humanoid.Health =
+						Humanoid.MaxHealth
+
+					godLastHealth =
+						Humanoid.MaxHealth
+				end
+			end
+		)
+
+	table.insert(
+		godConnections,
+		heartbeatConnection
+	)
 end
 
-function disableGodMode()
+--========================================================
+-- DISABLE GOD MODE
+--========================================================
 
-	GOD_MODE = false
+local function disableGodMode()
 
-	disconnectGod()
+	GOD_MODE =
+		false
+
+	disconnectGodConnections()
 
 	if Humanoid
 		and Humanoid.Parent then
@@ -231,20 +351,53 @@ function disableGodMode()
 				Enum.HumanoidStateType.Dead,
 				true
 			)
+
+			Humanoid.BreakJointsOnDeath =
+				true
+
+			Humanoid.RequiresNeck =
+				true
 		end)
+
+		-- Kalau menerima damage ketika God Mode
+		-- aktif, matikan God Mode = mati.
+		if godDamageTaken then
+
+			task.defer(
+				function()
+
+					if Humanoid
+						and Humanoid.Parent then
+
+						Humanoid.Health =
+							0
+					end
+				end
+			)
+		end
 	end
+
+	godLastHealth =
+		nil
+
+	godDamageTaken =
+		false
 end
 
 --========================================================
--- NOCLIP
+-- NOCLIP ENABLE
 --========================================================
 
-local function updateNoClip()
+local function enableNoClip()
 
 	if not Character
 		or not Character.Parent then
 		return
 	end
+
+	table.clear(
+		savedCollision
+	)
 
 	for _, object in ipairs(
 		Character:GetDescendants()
@@ -252,20 +405,99 @@ local function updateNoClip()
 
 		if object:IsA("BasePart") then
 
-			if object.Name ~= "HumanoidRootPart" then
+			savedCollision[object] =
+				object.CanCollide
 
-				object.CanCollide =
-					not NOCLIP
-			end
+			object.CanCollide =
+				false
 		end
 	end
 end
 
+--========================================================
+-- NOCLIP DISABLE
+--========================================================
+
+local function disableNoClip()
+
+	for part, oldValue in pairs(
+		savedCollision
+	) do
+
+		if part
+			and part.Parent then
+
+			part.CanCollide =
+				oldValue
+		end
+	end
+
+	table.clear(
+		savedCollision
+	)
+end
+
+--========================================================
+-- NOCLIP LOOP
+--========================================================
+
 RunService.Stepped:Connect(
 	function()
 
+		if not NOCLIP then
+			return
+		end
+
+		if not Character
+			or not Character.Parent then
+
+			return
+		end
+
+		for _, object in ipairs(
+			Character:GetDescendants()
+		) do
+
+			if object:IsA("BasePart") then
+
+				if not savedCollision[object] then
+
+					savedCollision[object] =
+						object.CanCollide
+				end
+
+				object.CanCollide =
+					false
+			end
+		end
+	end
+)
+
+--========================================================
+-- CHARACTER ADDED
+--========================================================
+
+Player.CharacterAdded:Connect(
+	function(character)
+
+		task.wait(0.5)
+
+		setupCharacter(
+			character
+		)
+
 		if NOCLIP then
-			updateNoClip()
+
+			task.wait(0.1)
+
+			enableNoClip()
+		end
+
+		if GOD_MODE then
+
+			task.wait(0.2)
+
+			enableGodMode()
 		end
 	end
 )
@@ -274,30 +506,32 @@ RunService.Stepped:Connect(
 -- FIND OBJECT
 --========================================================
 
-local function findNamedObject(name)
+local function findNamedObject(
+	name
+)
 
-	local exact =
+	local object =
 		Workspace:FindFirstChild(
 			name,
 			true
 		)
 
-	if exact then
-		return exact
+	if object then
+		return object
 	end
 
 	local wanted =
 		string.lower(name)
 
-	for _, object in ipairs(
+	for _, descendant in ipairs(
 		Workspace:GetDescendants()
 	) do
 
 		if string.lower(
-			object.Name
+			descendant.Name
 		) == wanted then
 
-			return object
+			return descendant
 		end
 	end
 
@@ -308,17 +542,24 @@ end
 -- GET PART
 --========================================================
 
-local function getPart(object)
+local function getPart(
+	object
+)
 
 	if not object then
 		return nil
 	end
 
-	if object:IsA("BasePart") then
+	if object:IsA(
+		"BasePart"
+	) then
+
 		return object
 	end
 
-	if object:IsA("Model") then
+	if object:IsA(
+		"Model"
+	) then
 
 		if object.PrimaryPart then
 			return object.PrimaryPart
@@ -334,7 +575,7 @@ local function getPart(object)
 end
 
 --========================================================
--- FIND SAFEZONE
+-- SAFEZONE
 --========================================================
 
 local function findSafeZone()
@@ -344,11 +585,13 @@ local function findSafeZone()
 			SAFEZONE_NAME
 		)
 
-	return getPart(object)
+	return getPart(
+		object
+	)
 end
 
 --========================================================
--- FIND TITAN TEMPLE
+-- TITAN TEMPLE
 --========================================================
 
 local function findTemple()
@@ -358,14 +601,18 @@ local function findTemple()
 			TEMPLE_NAME
 		)
 
-	return getPart(object)
+	return getPart(
+		object
+	)
 end
 
 --========================================================
--- FIND EGG PROMPT
+-- EGG PROMPT
 --========================================================
 
-local function isEggPrompt(prompt)
+local function isEggPrompt(
+	prompt
+)
 
 	if not prompt
 		or not prompt:IsA(
@@ -384,16 +631,13 @@ local function isEggPrompt(prompt)
 			.. (prompt.ObjectText or "")
 		)
 
-	local parent =
-		prompt.Parent
-
-	if parent then
+	if prompt.Parent then
 
 		text =
 			text
 			.. " "
 			.. string.lower(
-				parent.Name
+				prompt.Parent.Name
 			)
 	end
 
@@ -406,60 +650,64 @@ local function isEggPrompt(prompt)
 end
 
 --========================================================
--- GET PROMPT POSITION
+-- PROMPT POSITION
 --========================================================
 
-local function getPromptPosition(prompt)
+local function getPromptPosition(
+	prompt
+)
 
-	if not prompt then
+	if not prompt
+		or not prompt.Parent then
+
 		return nil
 	end
 
 	local parent =
 		prompt.Parent
 
-	if not parent then
-		return nil
-	end
+	if parent:IsA(
+		"BasePart"
+	) then
 
-	if parent:IsA("BasePart") then
 		return parent.Position
 	end
 
-	if parent:IsA("Attachment") then
+	if parent:IsA(
+		"Attachment"
+	) then
+
 		return parent.WorldPosition
 	end
 
-	if parent:IsA("Model") then
+	local part =
+		getPart(parent)
 
-		local part =
-			getPart(parent)
-
-		if part then
-			return part.Position
-		end
+	if part then
+		return part.Position
 	end
 
-	local ancestorPart =
+	local ancestor =
 		parent:FindFirstAncestorWhichIsA(
 			"BasePart"
 		)
 
-	if ancestorPart then
-		return ancestorPart.Position
+	if ancestor then
+		return ancestor.Position
 	end
 
 	return nil
 end
 
 --========================================================
--- FIND EGG IN TEMPLE
+-- FIND EGG
 --========================================================
 
 local function findEggPrompt()
 
 	if not HRP
 		or not HRP.Parent then
+
 		return nil
 	end
 
@@ -473,8 +721,11 @@ local function findEggPrompt()
 	local templePosition =
 		temple.Position
 
-	local closest = nil
-	local closestDistance = math.huge
+	local closest =
+		nil
+
+	local closestDistance =
+		math.huge
 
 	for _, object in ipairs(
 		Workspace:GetDescendants()
@@ -487,30 +738,32 @@ local function findEggPrompt()
 		then
 
 			local position =
-				getPromptPosition(object)
+				getPromptPosition(
+					object
+				)
 
 			if position then
 
-				local distanceFromTemple =
+				local templeDistance =
 					(
 						position
 						- templePosition
 					).Magnitude
 
-				if distanceFromTemple
+				if templeDistance
 					<= TEMPLE_EGG_RADIUS then
 
-					local distanceFromPlayer =
+					local playerDistance =
 						(
 							position
 							- HRP.Position
 						).Magnitude
 
-					if distanceFromPlayer
+					if playerDistance
 						< closestDistance then
 
 						closestDistance =
-							distanceFromPlayer
+							playerDistance
 
 						closest =
 							object
@@ -529,7 +782,8 @@ end
 
 local function stopMovement()
 
-	moving = false
+	moving =
+		false
 
 	if Humanoid
 		and Humanoid.Parent then
@@ -577,12 +831,14 @@ local function moveStraightTo(
 		return false
 	end
 
-	moving = true
+	moving =
+		true
 
 	local startTime =
 		os.clock()
 
-	local success = false
+	local reached =
+		false
 
 	while moving
 		and Character
@@ -594,18 +850,19 @@ local function moveStraightTo(
 		and os.clock() - startTime
 			< timeout do
 
-		local current =
-			HRP.Position
-
 		local offset =
-			targetPosition - current
+			targetPosition
+			- HRP.Position
 
 		local distance =
 			offset.Magnitude
 
-		if distance <= distanceLimit then
+		if distance
+			<= distanceLimit then
 
-			success = true
+			reached =
+				true
+
 			break
 		end
 
@@ -621,18 +878,19 @@ local function moveStraightTo(
 		)
 
 		HRP.AssemblyLinearVelocity =
-			direction * SPEED
+			direction
+			* SPEED
 
 		RunService.Heartbeat:Wait()
 	end
 
 	stopMovement()
 
-	return success
+	return reached
 end
 
 --========================================================
--- RETURN TO SAFEZONE
+-- RETURN SAFEZONE
 --========================================================
 
 local function returnToSafeZone()
@@ -643,6 +901,7 @@ local function returnToSafeZone()
 
 	if not HRP
 		or not HRP.Parent then
+
 		return
 	end
 
@@ -672,7 +931,9 @@ end
 -- ACTIVATE PROMPT
 --========================================================
 
-local function activatePrompt(prompt)
+local function activatePrompt(
+	prompt
+)
 
 	if not prompt
 		or not prompt.Parent then
@@ -681,7 +942,9 @@ local function activatePrompt(prompt)
 	end
 
 	local position =
-		getPromptPosition(prompt)
+		getPromptPosition(
+			prompt
+		)
 
 	if position
 		and HRP
@@ -700,8 +963,6 @@ local function activatePrompt(prompt)
 		end
 	end
 
-	-- Normal Roblox ProximityPrompt interaction.
-	-- Tidak menggunakan executor-only fire functions.
 	local success =
 		pcall(
 			function()
@@ -744,11 +1005,12 @@ local function autoStealMission()
 		return
 	end
 
-	missionRunning = true
+	missionRunning =
+		true
 
-	------------------------------------------------
-	-- FIND TEMPLE
-	------------------------------------------------
+	--====================================================
+	-- TEMPLE
+	--====================================================
 
 	local temple =
 		findTemple()
@@ -760,10 +1022,6 @@ local function autoStealMission()
 
 		return
 	end
-
-	------------------------------------------------
-	-- GO TO TEMPLE
-	------------------------------------------------
 
 	local templeTarget =
 		temple.Position
@@ -787,9 +1045,9 @@ local function autoStealMission()
 		return
 	end
 
-	------------------------------------------------
-	-- FIND EGG
-	------------------------------------------------
+	--====================================================
+	-- EGG
+	--====================================================
 
 	local egg =
 		findEggPrompt()
@@ -804,10 +1062,6 @@ local function autoStealMission()
 
 	currentEgg =
 		egg
-
-	------------------------------------------------
-	-- GO TO EGG
-	------------------------------------------------
 
 	local eggPosition =
 		getPromptPosition(
@@ -824,6 +1078,10 @@ local function autoStealMission()
 
 		return
 	end
+
+	--====================================================
+	-- APPROACH EGG
+	--====================================================
 
 	moveStraightTo(
 		eggPosition,
@@ -842,32 +1100,33 @@ local function autoStealMission()
 		return
 	end
 
-	------------------------------------------------
+	--====================================================
 	-- PICKUP
-	------------------------------------------------
+	--====================================================
 
-	if HRP
-		and HRP.Parent
-		and egg
-		and egg.Parent then
+	if egg
+		and egg.Parent
+		and HRP
+		and HRP.Parent then
+
+		task.wait(
+			PICKUP_DELAY
+		)
 
 		activatePrompt(
 			egg
-		)
-
-		task.wait(
-			PICKUP_VERIFY_TIMEOUT
 		)
 	end
 
 	currentEgg =
 		nil
 
-	------------------------------------------------
+	--====================================================
 	-- RETURN
-	------------------------------------------------
+	--====================================================
 
 	if AUTO_RETURN then
+
 		returnToSafeZone()
 	end
 
@@ -879,7 +1138,9 @@ end
 -- PROMPT CONNECTION
 --========================================================
 
-local function connectPrompt(prompt)
+local function connectPrompt(
+	prompt
+)
 
 	if connectedPrompts[prompt] then
 		return
@@ -892,6 +1153,7 @@ local function connectPrompt(prompt)
 		function(_, parent)
 
 			if not parent then
+
 				connectedPrompts[prompt] =
 					nil
 			end
@@ -907,7 +1169,9 @@ for _, object in ipairs(
 		"ProximityPrompt"
 	) then
 
-		connectPrompt(object)
+		connectPrompt(
+			object
+		)
 	end
 end
 
@@ -918,13 +1182,15 @@ Workspace.DescendantAdded:Connect(
 			"ProximityPrompt"
 		) then
 
-			connectPrompt(object)
+			connectPrompt(
+				object
+			)
 		end
 	end
 )
 
 --========================================================
--- UI
+-- REMOVE OLD UI
 --========================================================
 
 local oldGui =
@@ -935,6 +1201,10 @@ local oldGui =
 if oldGui then
 	oldGui:Destroy()
 end
+
+--========================================================
+-- SCREEN GUI
+--========================================================
 
 local ScreenGui =
 	Instance.new("ScreenGui")
@@ -1107,6 +1377,9 @@ DragHandle.Text =
 DragHandle.AutoButtonColor =
 	false
 
+DragHandle.Active =
+	true
+
 DragHandle.ZIndex =
 	25
 
@@ -1176,7 +1449,9 @@ Close.Parent =
 	Main
 
 local CloseCorner =
-	Instance.new("UICorner")
+	Instance.new(
+		"UICorner"
+	)
 
 CloseCorner.CornerRadius =
 	UDim.new(
@@ -1192,7 +1467,9 @@ CloseCorner.Parent =
 --========================================================
 
 local Status =
-	Instance.new("TextLabel")
+	Instance.new(
+		"TextLabel"
+	)
 
 Status.Size =
 	UDim2.new(
@@ -1244,7 +1521,9 @@ local function createButton(
 )
 
 	local button =
-		Instance.new("TextButton")
+		Instance.new(
+			"TextButton"
+		)
 
 	button.Name =
 		name
@@ -1305,7 +1584,9 @@ local function createButton(
 		Main
 
 	local corner =
-		Instance.new("UICorner")
+		Instance.new(
+			"UICorner"
+		)
 
 	corner.CornerRadius =
 		UDim.new(
@@ -1344,12 +1625,21 @@ local GodModeButton =
 		148
 	)
 
+local NoClipButton =
+	createButton(
+		"NoClip",
+		"NOCLIP : OFF",
+		188
+	)
+
 --========================================================
 -- SPEED LABEL
 --========================================================
 
 local SpeedLabel =
-	Instance.new("TextLabel")
+	Instance.new(
+		"TextLabel"
+	)
 
 SpeedLabel.Size =
 	UDim2.new(
@@ -1362,7 +1652,7 @@ SpeedLabel.Size =
 SpeedLabel.Position =
 	UDim2.fromOffset(
 		15,
-		190
+		228
 	)
 
 SpeedLabel.BackgroundTransparency =
@@ -1370,7 +1660,9 @@ SpeedLabel.BackgroundTransparency =
 
 SpeedLabel.Text =
 	"SPEED : "
-		.. tostring(SPEED)
+		.. tostring(
+			SPEED
+		)
 
 SpeedLabel.TextSize =
 	12
@@ -1399,7 +1691,9 @@ SpeedLabel.Parent =
 --========================================================
 
 local Slider =
-	Instance.new("Frame")
+	Instance.new(
+		"Frame"
+	)
 
 Slider.Size =
 	UDim2.new(
@@ -1412,7 +1706,7 @@ Slider.Size =
 Slider.Position =
 	UDim2.fromOffset(
 		15,
-		222
+		255
 	)
 
 Slider.BackgroundColor3 =
@@ -1432,7 +1726,9 @@ Slider.Parent =
 	Main
 
 local SliderCorner =
-	Instance.new("UICorner")
+	Instance.new(
+		"UICorner"
+	)
 
 SliderCorner.CornerRadius =
 	UDim.new(
@@ -1444,15 +1740,28 @@ SliderCorner.Parent =
 	Slider
 
 local Fill =
-	Instance.new("Frame")
+	Instance.new(
+		"Frame"
+	)
+
+local initialPercent =
+	math.clamp(
+		(
+			SPEED
+			- MIN_SPEED
+		)
+		/
+		(
+			MAX_SPEED
+			- MIN_SPEED
+		),
+		0,
+		1
+	)
 
 Fill.Size =
 	UDim2.new(
-		(
-			SPEED - MIN_SPEED
-		) / (
-			MAX_SPEED - MIN_SPEED
-		),
+		initialPercent,
 		0,
 		1,
 		0
@@ -1475,7 +1784,9 @@ Fill.Parent =
 	Slider
 
 local FillCorner =
-	Instance.new("UICorner")
+	Instance.new(
+		"UICorner"
+	)
 
 FillCorner.CornerRadius =
 	UDim.new(
@@ -1486,12 +1797,10 @@ FillCorner.CornerRadius =
 FillCorner.Parent =
 	Fill
 
---========================================================
--- SPEED SLIDER BUTTON
---========================================================
-
 local SliderButton =
-	Instance.new("TextButton")
+	Instance.new(
+		"TextButton"
+	)
 
 SliderButton.Size =
 	UDim2.fromOffset(
@@ -1507,11 +1816,7 @@ SliderButton.AnchorPoint =
 
 SliderButton.Position =
 	UDim2.new(
-		(
-			SPEED - MIN_SPEED
-		) / (
-			MAX_SPEED - MIN_SPEED
-		),
+		initialPercent,
 		0,
 		0.5,
 		0
@@ -1535,44 +1840,31 @@ SliderButton.ZIndex =
 
 SliderButton.Parent =
 	Slider
-
-local SliderButtonCorner =
-	Instance.new("UICorner")
-
-SliderButtonCorner.CornerRadius =
-	UDim.new(
-		1,
-		0
-	)
-
-SliderButtonCorner.Parent =
-	SliderButton
-
 --========================================================
--- SPEED SLIDER
+-- SPEED SLIDER INPUT
 --========================================================
+
+local sliderDragging =
+	false
 
 local function setSpeedFromInput(
 	input
 )
 
-	local absolute =
-		Slider.AbsolutePosition
-
-	local size =
+	local sliderSize =
 		Slider.AbsoluteSize
 
-	if size.X <= 0 then
+	if sliderSize.X <= 0 then
 		return
 	end
 
 	local x =
 		input.Position.X
-		- absolute.X
+		- Slider.AbsolutePosition.X
 
 	local percent =
 		math.clamp(
-			x / size.X,
+			x / sliderSize.X,
 			0,
 			1
 		)
@@ -1604,13 +1896,12 @@ local function setSpeedFromInput(
 
 	SpeedLabel.Text =
 		"SPEED : "
-		.. tostring(SPEED)
+		.. tostring(
+			SPEED
+		)
 end
 
-local sliderDragging =
-	false
-
-SliderButton.InputBegan:Connect(
+Slider.InputBegan:Connect(
 	function(input)
 
 		if input.UserInputType
@@ -1628,7 +1919,7 @@ SliderButton.InputBegan:Connect(
 	end
 )
 
-Slider.InputBegan:Connect(
+SliderButton.InputBegan:Connect(
 	function(input)
 
 		if input.UserInputType
@@ -1756,20 +2047,7 @@ AutoReturnButton.Activated:Connect(
 GodModeButton.Activated:Connect(
 	function()
 
-		GOD_MODE =
-			not GOD_MODE
-
 		if GOD_MODE then
-
-			GodModeButton.Text =
-				"GOD MODE : ON"
-
-			Status.Text =
-				"God Mode enabled"
-
-			enableGodMode()
-
-		else
 
 			GodModeButton.Text =
 				"GOD MODE : OFF"
@@ -1778,6 +2056,49 @@ GodModeButton.Activated:Connect(
 				"God Mode disabled"
 
 			disableGodMode()
+
+		else
+
+			GodModeButton.Text =
+				"GOD MODE : ON"
+
+			Status.Text =
+				"God Mode enabled"
+
+			enableGodMode()
+		end
+	end
+)
+
+--========================================================
+-- NOCLIP BUTTON
+--========================================================
+
+NoClipButton.Activated:Connect(
+	function()
+
+		NOCLIP =
+			not NOCLIP
+
+		if NOCLIP then
+
+			NoClipButton.Text =
+				"NOCLIP : ON"
+
+			Status.Text =
+				"NoClip enabled"
+
+			enableNoClip()
+
+		else
+
+			NoClipButton.Text =
+				"NOCLIP : OFF"
+
+			Status.Text =
+				"NoClip disabled"
+
+			disableNoClip()
 		end
 	end
 )
@@ -1787,7 +2108,9 @@ GodModeButton.Activated:Connect(
 --========================================================
 
 local Mini =
-	Instance.new("TextButton")
+	Instance.new(
+		"TextButton"
+	)
 
 Mini.Name =
 	"MiniBall"
@@ -1854,7 +2177,9 @@ Mini.Parent =
 	ScreenGui
 
 local MiniCorner =
-	Instance.new("UICorner")
+	Instance.new(
+		"UICorner"
+	)
 
 MiniCorner.CornerRadius =
 	UDim.new(
@@ -1866,7 +2191,9 @@ MiniCorner.Parent =
 	Mini
 
 local MiniStroke =
-	Instance.new("UIStroke")
+	Instance.new(
+		"UIStroke"
+	)
 
 MiniStroke.Thickness =
 	1.5
@@ -2000,20 +2327,18 @@ UserInputService.InputEnded:Connect(
 )
 
 --========================================================
--- SPEED APPLY
+-- APPLY SPEED
 --========================================================
 
 RunService.Heartbeat:Connect(
 	function()
 
 		if Humanoid
-			and Humanoid.Parent then
+			and Humanoid.Parent
+			and not moving then
 
-			if not moving then
-
-				Humanoid.WalkSpeed =
-					SPEED
-			end
+			Humanoid.WalkSpeed =
+				SPEED
 		end
 	end
 )
@@ -2045,6 +2370,11 @@ task.spawn(
 
 				Status.Text =
 					"God Mode : ON"
+
+			elseif NOCLIP then
+
+				Status.Text =
+					"NoClip : ON"
 
 			elseif AUTO_STEAL then
 
@@ -2095,27 +2425,45 @@ task.spawn(
 )
 
 --========================================================
--- RESPAWN
+-- CLEANUP
 --========================================================
 
-Player.CharacterAdded:Connect(
-	function(character)
+ScreenGui.AncestryChanged:Connect(
+	function(
+		_,
+		parent
+	)
 
-		task.wait(
-			0.5
-		)
+		if parent then
+			return
+		end
 
-		setupCharacter(
-			character
-		)
+		missionRunning =
+			false
+
+		moving =
+			false
+
+		AUTO_STEAL =
+			false
+
+		AUTO_RETURN =
+			false
+
+		if NOCLIP then
+
+			NOCLIP =
+				false
+
+			disableNoClip()
+		end
 
 		if GOD_MODE then
 
-			task.wait(
-				0.2
-			)
+			GOD_MODE =
+				false
 
-			enableGodMode()
+			disconnectGodConnections()
 		end
 	end
 )
@@ -2130,3 +2478,16 @@ Status.Text =
 print(
 	"[LuckyHub] Loaded successfully"
 )
+local SliderButtonCorner =
+	Instance.new(
+		"UICorner"
+	)
+
+SliderButtonCorner.CornerRadius =
+	UDim.new(
+		1,
+		0
+	)
+
+SliderButtonCorner.Parent =
+	SliderButton
